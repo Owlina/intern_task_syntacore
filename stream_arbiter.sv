@@ -10,13 +10,10 @@
 module stream_arbiter #(
   parameter T_DATA_WIDTH = 8,
   parameter T_QOS_WIDTH  = 4,
-  parameter STREAM_COUNT = 2,
+  parameter STREAM_COUNT = 2
 
-  /// In task following parameter is declared as localparam
-  /// Setting it as `parameter` is completely OK, though setting it as
-  /// `localparam` is for reason: user of this module would not be able
-  /// to change `T_ID_WIDTH`, meanwhile you can declare ports with width `T_ID_WIDTH`
-  parameter T_ID_WIDTH   = $clog2(STREAM_COUNT)
+  /// In task parameter T_ID_WIDTH is declared as localparam
+  // I cannot declare localparams here, so I've moved it to main block
 )(
   input  logic                           clk,
   input  logic                           rst_n,
@@ -31,16 +28,18 @@ module stream_arbiter #(
   // Output stream
   output logic [T_DATA_WIDTH-1:0]        m_data_o,
   output logic [T_QOS_WIDTH -1:0]        m_qos_o,
-  output logic [T_ID_WIDTH - 1:0]        m_id_o,
+  output logic [($clog2(STREAM_COUNT)) - 1:0]        m_id_o,
   output logic                           m_last_o,
   output logic                           m_valid_o,
   input  logic                           m_ready_i
 );
 
-  integer state = 0;         // Varriable for machine state
+  localparam T_ID_WIDTH   = $clog2(STREAM_COUNT);
 
-  logic [T_QOS_WIDTH -1:0] sorted_priorities [STREAM_COUNT-1:0] = '{default: 0}; // Array of sorted priorities
-  logic [T_ID_WIDTH:0] sorted_streams = '{default: 0};                           // Array of sorted streams
+ integer state = 2;    // Varriable for machine state
+
+  logic [T_QOS_WIDTH -1:0] sorted_priorities [STREAM_COUNT-1:0] = '{default: 0};  // Array of sorted priorities
+  logic [T_ID_WIDTH - 1:0] sorted_streams    [STREAM_COUNT-1:0] = '{default: 0};  // Array of sorted streams
 
   integer sorted_count = 0;  // Element counter in the array
   integer cnt = 0;           // Counter for outputting all streams
@@ -68,20 +67,19 @@ module stream_arbiter #(
         if (!m_ready_i) begin
           state = 2;
         end
+		  
+		  // During sorting, the data transmitted by the arbiter is invalid, and it's not ready to receive data
+        m_valid_o <= 0;
+        s_ready_o <= '0;
+		  
         // Sorting
         sorted_priorities = s_qos_i;
-        for (int i = 0; i < STREAM_COUNT; i = i + 1) begin
-          /// This array is defined as single-dimension packed, but here we assign i to it,
-          /// So we are likely to get smthn like 6'b101010, when T_ID_WIDTH == 6
-          /// But, yes, it shall work for T_ID_WIDTH == 2
-          /// Please, fix this
+        for (i = 0; i < STREAM_COUNT; i = i + 1) begin
+		  
+          /// Fixed by adding "STREAM_COUNT" lenght to array elements/
           sorted_streams[i] = i;
         end
         sorted_count = 0; // Element counter in the array
-
-        // During sorting, the data transmitted by the arbiter is invalid, and it's not ready to receive data
-        m_valid_o <= 0;
-        s_ready_o <= '0;
 
         // Fill arrays with priorities and stream numbers
         for (i = 0; i < STREAM_COUNT; i = i + 1) begin
@@ -108,12 +106,12 @@ module stream_arbiter #(
           end
         end
         if(sorted_count > 0) begin
-          state = 1;
+          state <= 1;
         end
       end
       1: begin
         if (!m_ready_i) begin
-          state = 2;
+          state <= 2;
         end
         if (cnt < sorted_count) begin
           // If the master is ready to receive data, the transmitted data is valid, and the packet is not the last, then the data is transmitted
@@ -136,14 +134,17 @@ module stream_arbiter #(
             cnt <= cnt + 1;
           end
         end
-        // After processing all streams, the arbiter goes back to sorting
+        // After processing all streams, the arbiter goes back to sorting (is master is ready)
         else begin
-          cnt = 0;
-          state = 0;
-          /// It is not the best option to combine <= and =, it affects readability and makes synthesis less predictable
-          /// So is usage of = in always_ff block
-          /// This should be fixed
-
+          cnt <= 0;
+ 
+          if (!m_ready_i) begin
+            state <= 2;
+          end
+          else begin
+            state <= 0;
+          end
+ 
           // Reset output data during sorting
           m_data_o <= '0; // Reset data on output
           m_qos_o <= '0;  // Reset QoS on output
@@ -151,23 +152,24 @@ module stream_arbiter #(
           m_last_o <= '0; // Reset last on output
           m_valid_o <= 0; // Reset valid on output
 
-          /// At this point we may also lose some data, because if it arrives in the following cycle,
-          /// state will be 0, while s_ready_o is (STREAM_COUNT)'(1) yet (because s_ready_o <= '0 ), so we lose data
-          ///                                                                               ^~
-          s_ready_o = '1;
+          /// My thoughts here was for "s_ready_o <= '1" to show master-interface that slave-interface is ready to work
+          /// So master-interface could send another pack of priorities 
+          /// But if I assume that when m_ready_i is 1 it always sends priorities to work with, s_ready_o can be all 0
+          s_ready_o <= '0;
         end
       end
       default: begin
         // All zeros
-        /// When ~m_ready_i, s_ready_o becomes (STREAM_COUNT)'(1), so all the requesters start sending data,
-        /// Which is not OK, because ~m_ready_i, so the data will be lost. Please fix this bug
+		  
+        /// Logic here was the same, but I understand why it is wrong, so it's fixed
 
         m_data_o <= '0;  // Reset data on output
         m_qos_o <= '0;   // Reset QoS on output
         m_id_o <= '0;    // Reset ID on output
         m_last_o <= '0;  // Reset last on output
         m_valid_o <= 0;  // Reset valid on output
-        s_ready_o <= '1; // Set ready on output
+        s_ready_o <= '0; // Reset ready on output
+  
         if (m_ready_i) begin
           state <= 0;
         end
@@ -183,9 +185,15 @@ module stream_arbiter #(
 /// to accept, or last packet of transaction is reached.
 /// This is not a feature request), but just information for consideration
 
-/// Please fix the bugs
 
-/// Please, also append your testbench so that it checks cases when ~m_ready_i
+// About working with transactions "in flight" - yeah, I thought about it, even tried to write such logic
+// But when it's more memory optimal, if I'm not mistaken, 
+// it creates one takt delay between each transaction to find next highest priority. 
+// I even tried to use always_comb to avoid this delay, but could not make it work.
+// So sorting was my option, and it was closer one to example in the task.
+
+/// Bugs fixed
+
+/// Testbench now checks case when ~m_ready_i and contains 3 transactions (delay between 2 and 3)
 
 endmodule
-

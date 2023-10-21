@@ -16,7 +16,14 @@
   Stream 2.2: 
     qos = 0, data = 8, 9 (last)
  
-  (data from task example for better comparison)
+  //here is ~m_ready_i for #50
+  
+  Stream 3.1: 
+    qos = 2, data = 6, 7 (last)
+  Stream 3.2: 
+    qos = 2, data = 4, 5 (last)
+ 
+  (data of first 2 streams from task example for better comparison)
 
 
 ******************************************************************/
@@ -42,8 +49,7 @@ module tb_stream_arbiter;
   stream_arbiter #(
     .T_DATA_WIDTH(8),
     .T_QOS_WIDTH(4),
-    .STREAM_COUNT(2),
-    .T_ID_WIDTH(1)
+    .STREAM_COUNT(2)
   ) uut (
     .clk(clk),
     .rst_n(rst_n),
@@ -72,8 +78,6 @@ module tb_stream_arbiter;
     m_ready_i = 0; // Start with zero readiness
     #10 rst_n = 1;
     
-    // Wait for the arbiter to set readiness for reception
-    wait(s_ready_o == 2'b11);
     
     // Start transmitting transactions
     m_ready_i = 1; // Set readiness for transmission
@@ -105,8 +109,8 @@ module tb_stream_arbiter;
     s_data_i[1] = 8'hD;
     s_last_i[1] = 1;
     
-    // Wait for the arbiter to finish the transaction (all ready signals will be 1 since the stream was the last)
-    wait(s_ready_o == 2'b11);
+    // Wait for the arbiter to finish the transaction (all ready signals will be 0 since all streams sent)
+    wait(s_ready_o == 2'b00);
     
     // Move to the next transaction
     m_ready_i = 1; // Set readiness for transmission
@@ -138,11 +142,47 @@ module tb_stream_arbiter;
     s_data_i[1] = 8'h9;
     s_last_i[1] = 1;
     
-    // Wait for the arbiter to finish the transaction (all ready signals will be 1 since the stream was the last)
-    wait(s_ready_o == 2'b11);
+    // Wait for the arbiter to finish the transaction 
+    wait(s_ready_o == 2'b00);
+    
+    // Set ~m_ready_i (master is not ready)
+    m_ready_i = 0; 
+	 
+	 // Transaction 3
+    s_data_i[0] = 8'h6;
+    s_qos_i[0] = 2;
+    s_data_i[1] = 8'h4;
+    s_qos_i[1] = 2;
+    s_valid_i = 2'b11;
+    s_last_i = 2'b00;
+	 
+	 // Set readiness for transmission
+    #50 m_ready_i = 1; 
+    
+    // Wait for transmission
+    wait(s_ready_o == 2'b01);
+    #10
+    // On the next positive clock edge, change the data and indicate that the packet is the last
+    wait (clk == 1) 
+    s_data_i[0] = 8'h7;
+    s_last_i[0] = 1;
+    
+    // Wait for the transmission of the next transaction and reset stream 0
+    wait(s_ready_o == 2'b10);
+    s_last_i[0] = 0;
+    s_valid_i[0] = 0;
+    
+    #10
+    // On the next positive clock edge, change the data and indicate that the packet is the last
+    wait (clk == 1)
+    s_data_i[1] = 8'h5;
+    s_last_i[1] = 1;
+    
+    // Wait for the arbiter to finish the transaction 
+    wait(s_ready_o == 2'b00);
     
     // Finish the work
     m_ready_i = 0; 
-    #10 $finish;
+    #20 $finish;
   end
-endmodule 
+endmodule
